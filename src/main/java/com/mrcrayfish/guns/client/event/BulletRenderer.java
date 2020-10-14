@@ -1,21 +1,19 @@
 package com.mrcrayfish.guns.client.event;
 
 import com.mojang.blaze3d.matrix.MatrixStack;
-import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.IVertexBuilder;
 import com.mrcrayfish.guns.client.RenderTypes;
 import com.mrcrayfish.guns.client.util.RenderUtil;
 import com.mrcrayfish.guns.object.Bullet;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.IRenderTypeBuffer;
-import net.minecraft.client.renderer.RenderState;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.RenderTypeLookup;
 import net.minecraft.client.renderer.WorldRenderer;
 import net.minecraft.client.renderer.model.ItemCameraTransforms;
 import net.minecraft.client.renderer.texture.OverlayTexture;
-import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.vector.Matrix4f;
@@ -24,7 +22,6 @@ import net.minecraft.util.math.vector.Vector3f;
 import net.minecraftforge.client.event.RenderWorldLastEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
-import org.lwjgl.opengl.GL11;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,12 +31,8 @@ import java.util.List;
  */
 public class BulletRenderer
 {
-    private List<Bullet> bullets = new ArrayList<>();
+    private final List<Bullet> bullets = new ArrayList<>();
 
-    /**
-     *
-     * @param bullet
-     */
     public void addBullet(Bullet bullet)
     {
         this.bullets.add(bullet);
@@ -48,7 +41,7 @@ public class BulletRenderer
     @SubscribeEvent
     public void onTickBullets(TickEvent.ClientTickEvent event)
     {
-        if(Minecraft.getInstance().world != null && event.phase == TickEvent.Phase.END)
+        if (Minecraft.getInstance().world != null && event.phase == TickEvent.Phase.END)
         {
             this.bullets.forEach(bullet -> bullet.tick(Minecraft.getInstance().world));
             this.bullets.removeIf(Bullet::isFinished);
@@ -58,23 +51,103 @@ public class BulletRenderer
     @SubscribeEvent
     public void onRenderBullets(RenderWorldLastEvent event)
     {
-        for(Bullet bullet : this.bullets)
+        Minecraft mc = Minecraft.getInstance();
+        Entity entity = mc.getRenderViewEntity();
+        if (entity == null)
+            return;
+
+        boolean old = ((PlayerEntity) entity).inventory.currentItem == 0;
+        if (old)
         {
-            this.renderBullet(bullet, event.getMatrixStack(), event.getPartialTicks());
+            for (Bullet bullet : this.bullets)
+            {
+                this.renderBulletOld(bullet, event.getMatrixStack(), event.getPartialTicks());
+            }
+        }
+        else
+        {
+            IRenderTypeBuffer.Impl buffer = mc.getRenderTypeBuffers().getBufferSource();
+            MatrixStack matrixStack = event.getMatrixStack();
+            float partialTicks = event.getPartialTicks();
+            Vector3d view = mc.gameRenderer.getActiveRenderInfo().getProjectedView();
+
+            matrixStack.push();
+            matrixStack.translate(-view.getX(), -view.getY(), -view.getZ());
+
+            BlockPos.Mutable pos = new BlockPos.Mutable();
+            for (Bullet bullet : this.bullets)
+            {
+                if (bullet.isFinished() || bullet.getProjectile() == null)
+                    continue;
+                this.renderBullet(bullet, pos, buffer, matrixStack, partialTicks);
+            }
+
+            for (Bullet bullet : this.bullets)
+            {
+                if (bullet.isFinished() || bullet.getProjectile() == null || bullet.getProjectile().getShooterId() == entity.getEntityId())
+                    continue;
+                this.renderTrail(bullet, buffer, matrixStack, partialTicks);
+            }
+
+            matrixStack.pop();
+
+            buffer.finish();
         }
     }
 
-    /**
-     *
-     * @param bullet
-     * @param matrixStack
-     * @param partialTicks
-     */
-    private void renderBullet(Bullet bullet, MatrixStack matrixStack, float partialTicks)
+    private void renderBullet(Bullet bullet, BlockPos.Mutable pos, IRenderTypeBuffer buffer, MatrixStack matrixStack, float partialTicks)
+    {
+        matrixStack.push();
+
+        double bulletX = bullet.getRenderX(partialTicks);
+        double bulletY = bullet.getRenderY(partialTicks);
+        double bulletZ = bullet.getRenderZ(partialTicks);
+        matrixStack.translate(bulletX, bulletY, bulletZ);
+        matrixStack.rotate(Vector3f.YP.rotationDegrees(bullet.getRotationYaw()));
+        matrixStack.rotate(Vector3f.XN.rotationDegrees(bullet.getRotationPitch() - 90));
+
+        matrixStack.rotate(Vector3f.YP.rotationDegrees((bullet.getProjectile().ticksExisted + partialTicks) * 50));
+        matrixStack.scale(0.275F, 0.275F, 0.275F);
+
+        RenderUtil.renderModel(bullet.getProjectile().getItem(), ItemCameraTransforms.TransformType.NONE, matrixStack, buffer, WorldRenderer.getCombinedLight(bullet.getProjectile().world, pos.setPos(bulletX, bulletY, bulletZ)), OverlayTexture.NO_OVERLAY);
+
+        matrixStack.pop();
+    }
+
+    private void renderTrail(Bullet bullet, IRenderTypeBuffer buffer, MatrixStack matrixStack, float partialTicks)
+    {
+        matrixStack.push();
+
+        matrixStack.translate(bullet.getRenderX(partialTicks), bullet.getRenderY(partialTicks), bullet.getRenderZ(partialTicks));
+        matrixStack.rotate(Vector3f.YP.rotationDegrees(bullet.getRotationYaw()));
+        matrixStack.rotate(Vector3f.XN.rotationDegrees(bullet.getRotationPitch() - 90));
+
+        Vector3d motionVec = new Vector3d(bullet.getMotionX(), bullet.getMotionY(), bullet.getMotionZ());
+        float trailLength = (float) ((motionVec.length() / 3.0F) * bullet.getTrailLengthMultiplier());
+        float red = (float) ((bullet.getTrailColor() >> 16) & 255) / 255.0F;
+        float green = (float) ((bullet.getTrailColor() >> 8) & 255) / 255.0F;
+        float blue = (float) (bullet.getTrailColor() & 255) / 255.0F;
+        float alpha = 0.3F;
+
+        IVertexBuilder builder = buffer.getBuffer(RenderTypes.getBulletTrail());
+        Matrix4f matrix4f = matrixStack.getLast().getMatrix();
+        builder.pos(matrix4f, 0, 0, -0.035F).color(red, green, blue, alpha).endVertex();
+        builder.pos(matrix4f, 0, 0, 0.035F).color(red, green, blue, alpha).endVertex();
+        builder.pos(matrix4f, 0, -trailLength, 0.035F).color(red, green, blue, alpha).endVertex();
+        builder.pos(matrix4f, 0, -trailLength, -0.035F).color(red, green, blue, alpha).endVertex();
+        builder.pos(matrix4f, -0.035F, 0, 0).color(red, green, blue, alpha).endVertex();
+        builder.pos(matrix4f, 0.035F, 0, 0).color(red, green, blue, alpha).endVertex();
+        builder.pos(matrix4f, 0.035F, -trailLength, 0).color(red, green, blue, alpha).endVertex();
+        builder.pos(matrix4f, -0.035F, -trailLength, 0).color(red, green, blue, alpha).endVertex();
+
+        matrixStack.pop();
+    }
+
+    private void renderBulletOld(Bullet bullet, MatrixStack matrixStack, float partialTicks)
     {
         Minecraft mc = Minecraft.getInstance();
         Entity entity = mc.getRenderViewEntity();
-        if(entity == null || bullet.isFinished() || bullet.getProjectile() == null)
+        if (entity == null || bullet.isFinished() || bullet.getProjectile() == null)
             return;
 
         matrixStack.push();
@@ -90,15 +163,15 @@ public class BulletRenderer
 
         Vector3d motionVec = new Vector3d(bullet.getMotionX(), bullet.getMotionY(), bullet.getMotionZ());
         float trailLength = (float) ((motionVec.length() / 3.0F) * bullet.getTrailLengthMultiplier());
-        float red = (float)(bullet.getTrailColor() >> 16 & 255) / 255.0F;
-        float green = (float)(bullet.getTrailColor() >> 8 & 255) / 255.0F;
-        float blue = (float)(bullet.getTrailColor() & 255) / 255.0F;
+        float red = (float) (bullet.getTrailColor() >> 16 & 255) / 255.0F;
+        float green = (float) (bullet.getTrailColor() >> 8 & 255) / 255.0F;
+        float blue = (float) (bullet.getTrailColor() & 255) / 255.0F;
         float alpha = 0.3F;
 
         Matrix4f matrix4f = matrixStack.getLast().getMatrix();
         IRenderTypeBuffer.Impl renderTypeBuffer = mc.getRenderTypeBuffers().getBufferSource();
 
-        if(bullet.getProjectile().getShooterId() != entity.getEntityId())
+        if (bullet.getProjectile().getShooterId() != entity.getEntityId())
         {
             RenderType bulletType = RenderTypes.getBulletTrail();
             IVertexBuilder builder = renderTypeBuffer.getBuffer(bulletType);
@@ -114,7 +187,7 @@ public class BulletRenderer
         }
 
         // No point rendering item if empty, so return
-        if(bullet.getProjectile().getItem().isEmpty())
+        if (bullet.getProjectile().getItem().isEmpty())
         {
             matrixStack.pop();
             return;

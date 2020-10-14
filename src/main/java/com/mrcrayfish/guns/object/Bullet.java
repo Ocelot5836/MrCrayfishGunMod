@@ -88,6 +88,18 @@ public class Bullet
         return this.projectile;
     }
 
+    public double getRenderX(float partialTicks){
+        return this.posX + this.motionX * partialTicks;
+    }
+
+    public double getRenderY(float partialTicks){
+        return this.posY + this.motionY * partialTicks;
+    }
+
+    public double getRenderZ(float partialTicks){
+        return this.posZ + this.motionZ * partialTicks;
+    }
+
     public double getPosX()
     {
         return this.posX;
